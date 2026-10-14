@@ -218,14 +218,17 @@ def read_npz_points(npz_path, depth_conf_thresh=0.1):
     raise ValueError(f"Could not find 3D point keys in '{npz_path}'. Available keys: {keys}")
 
 
-def project_points_to_density(xyz, up_axis="auto", width=256, height=256, padding=0.05):
+def project_points_to_density(xyz, up_axis="auto", width=256, height=256, padding=0.05,
+                              percentile_cap=98.0, gamma=0.8, dilate_kernel=1):
     """
     Projects 3D points along the vertical up-axis to create an isotropic
     256x256 density map matching RoomFormer training standards.
     
-    Returns:
-        density_uint8: (256, 256) uint8 image [0, 255]
-        norm_dict: metadata required to project 2D pixel coordinates back to real world meters
+    Args:
+        percentile_cap: Caps point counts at this percentile (e.g. 98.0) to prevent
+                        dense clusters/camera outliers from washing out the rest of the walls.
+        gamma: Non-linear brightness curve (< 1.0 brightens faint wall points).
+        dilate_kernel: Optional kernel size to thicken sparse point dots into solid walls.
     """
     x = xyz[:, 0]
     y = xyz[:, 1]
@@ -271,13 +274,29 @@ def project_points_to_density(xyz, up_axis="auto", width=256, height=256, paddin
 
     unique_coords, counts = np.unique(coordinates, return_counts=True, axis=0)
 
+    # Use robust percentile cap instead of raw max to prevent single dense outliers
+    # from compressing sparse wall points into near-invisible darkness
+    if percentile_cap is not None and percentile_cap > 0 and len(counts) > 0:
+        cap_val = float(np.percentile(counts, percentile_cap))
+        cap_val = max(cap_val, 1.0)
+        norm_counts = np.clip(counts.astype(np.float32), 0, cap_val) / cap_val
+    else:
+        max_val = max(float(counts.max()), 1.0)
+        norm_counts = counts.astype(np.float32) / max_val
+
+    # Apply gamma correction if desired
+    if gamma is not None and gamma > 0 and gamma != 1.0:
+        norm_counts = np.power(norm_counts, gamma)
+
     density = np.zeros((height, width), dtype=np.float32)
-    density[unique_coords[:, 1], unique_coords[:, 0]] = counts.astype(np.float32)
+    density[unique_coords[:, 1], unique_coords[:, 0]] = norm_counts
 
-    if density.max() > 0:
-        density = density / density.max()
+    density_uint8 = (np.clip(density, 0, 1.0) * 255.0).astype(np.uint8)
 
-    density_uint8 = (density * 255.0).astype(np.uint8)
+    # Optional dilation to connect sparse, dotted wall points
+    if dilate_kernel > 1:
+        k = np.ones((dilate_kernel, dilate_kernel), np.uint8)
+        density_uint8 = cv2.dilate(density_uint8, k, iterations=1)
 
     norm_dict = {
         "up_axis": up_axis,
@@ -533,6 +552,12 @@ def main():
                         help="Confidence threshold for filtering NPZ depth points")
     parser.add_argument("--density_only", action="store_true",
                         help="Only generate density maps, skipping model inference")
+    parser.add_argument("--percentile_cap", default=98.0, type=float,
+                        help="Point count saturation percentile cap (default: 98.0). Prevents dense cluster outliers from fading out walls.")
+    parser.add_argument("--gamma", default=0.8, type=float,
+                        help="Gamma contrast curve (< 1.0 boosts faint wall pixels, default: 0.8)")
+    parser.add_argument("--dilate_kernel", default=1, type=int,
+                        help="Dilation kernel size (e.g. 2) to thicken faint/sparse wall dots into solid lines (default: 1, no dilation)")
     parser.add_argument("--save_overlay", default=True, type=lambda v: str(v).lower() in ['true', '1', 'yes'],
                         help="Export density map with polygon overlay")
     parser.add_argument("--save_json", default=True, type=lambda v: str(v).lower() in ['true', '1', 'yes'],
@@ -604,11 +629,21 @@ def main():
         elif ext == '.ply':
             pts = read_ply_points(scene_file)
             print(f"  Loaded {len(pts)} points from PLY.")
-            density_img, norm_dict = project_points_to_density(pts, up_axis=args.up_axis)
+            density_img, norm_dict = project_points_to_density(
+                pts, up_axis=args.up_axis,
+                percentile_cap=args.percentile_cap,
+                gamma=args.gamma,
+                dilate_kernel=args.dilate_kernel
+            )
         elif ext == '.npz':
             pts = read_npz_points(scene_file, depth_conf_thresh=args.depth_conf_thresh)
             print(f"  Extracted {len(pts)} 3D points from NPZ.")
-            density_img, norm_dict = project_points_to_density(pts, up_axis=args.up_axis)
+            density_img, norm_dict = project_points_to_density(
+                pts, up_axis=args.up_axis,
+                percentile_cap=args.percentile_cap,
+                gamma=args.gamma,
+                dilate_kernel=args.dilate_kernel
+            )
         else:
             continue
 
