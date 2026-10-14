@@ -459,7 +459,10 @@ def load_model(args, model_type, checkpoint_path, device):
     model.eval()
 
     print(f"[Model Loader] Loading checkpoint: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(checkpoint_path, map_location=device)
     state_dict = checkpoint['model'] if 'model' in checkpoint else checkpoint
     model.load_state_dict(state_dict, strict=False)
 
