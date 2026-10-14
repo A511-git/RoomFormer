@@ -7,7 +7,10 @@ import pdb
 
 from torch.autograd import Function
 
-import native_rasterizer
+try:
+    import native_rasterizer
+except (ImportError, ModuleNotFoundError):
+    native_rasterizer = None
 
 MODE_BOUNDARY = "boundary"
 MODE_MASK = "mask"

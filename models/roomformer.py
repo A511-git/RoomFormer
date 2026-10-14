@@ -10,7 +10,11 @@ from util.misc import NestedTensor, nested_tensor_from_tensor_list, interpolate,
 
 from .backbone import build_backbone
 from .matcher import build_matcher
-from .losses import custom_L1_loss, MaskRasterizationLoss
+try:
+    from .losses import custom_L1_loss, MaskRasterizationLoss
+except (ImportError, ModuleNotFoundError):
+    custom_L1_loss = None
+    MaskRasterizationLoss = None
 from .deformable_transformer import build_deforamble_transformer
 import copy
 
